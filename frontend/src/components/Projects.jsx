@@ -97,6 +97,9 @@ const Projects = () => {
   // Fetch mentors and mentees for the form
   const [mentors, setMentors] = useState([]);
   const [mentees, setMentees] = useState([]);
+  
+  // Store mentee lookup for search
+  const [menteeLookup, setMenteeLookup] = useState(new Map());
 
   useEffect(() => {
     const fetchUsers = async () => {
@@ -208,7 +211,36 @@ const Projects = () => {
         // For HOD, show all projects (no filter)
       }
 
-      setProjects(filteredProjects);
+      // Fetch mentee details for search functionality
+      const allMenteeIds = new Set();
+      filteredProjects.forEach(project => {
+        if (Array.isArray(project.mentees)) {
+          project.mentees.forEach(id => allMenteeIds.add(id));
+        }
+      });
+
+      let menteeMap = new Map();
+      if (allMenteeIds.size > 0) {
+        const { data: menteeProfiles, error: menteeFetchError } = await supabase
+          .from('users')
+          .select('id, name, email')
+          .in('id', Array.from(allMenteeIds));
+
+        if (menteeFetchError) {
+          console.error('Error fetching mentee profiles:', menteeFetchError);
+        } else if (menteeProfiles) {
+          menteeMap = new Map(menteeProfiles.map(profile => [profile.id, profile]));
+          setMenteeLookup(menteeMap);
+        }
+      }
+
+      // Enrich projects with mentee details
+      const enrichedProjects = filteredProjects.map(project => ({
+        ...project,
+        menteeDetails: (project.mentees || []).map(id => menteeMap.get(id)).filter(Boolean)
+      }));
+
+      setProjects(enrichedProjects);
 
     } catch (e) {
       console.error('Unexpected error in fetchProjects:', e);
@@ -280,12 +312,30 @@ const Projects = () => {
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return projects;
+    
     return projects.filter(p => {
+      // Search in project name
       const title = (p.project_name || p.title || p.projectName || '').toLowerCase();
+      if (title.includes(q)) return true;
+      
+      // Search in domain
       const domain = (p.domain || '').toLowerCase();
-      const description = (p.project_details || p.description || '').toLowerCase();
-      const githubRepo = (p.githubRepo || '').toLowerCase();
-      return title.includes(q) || domain.includes(q) || description.includes(q) || githubRepo.includes(q);
+      if (domain.includes(q)) return true;
+      
+      // Search in mentee names and emails
+      if (Array.isArray(p.menteeDetails)) {
+        const hasMenteeMatch = p.menteeDetails.some(mentee => {
+          if (typeof mentee === 'object' && mentee !== null) {
+            const menteeName = (mentee.name || '').toLowerCase();
+            const menteeEmail = (mentee.email || '').toLowerCase();
+            return menteeName.includes(q) || menteeEmail.includes(q);
+          }
+          return false;
+        });
+        if (hasMenteeMatch) return true;
+      }
+      
+      return false;
     });
   }, [projects, query]);
 
@@ -347,35 +397,22 @@ const Projects = () => {
             </div>
             <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
               <div className="relative flex-1 md:w-96">
-                <span className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-4 text-gray-400">🔍</span>
+                <span className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-gray-400">
+                  🔍
+                </span>
                 <input
                   type="text"
                   value={query}
                   onChange={e => setQuery(e.target.value)}
-                  placeholder="Search by title, domain, or description..."
-                  className="input-enhanced pl-12"
+                  placeholder="Search by name, domain, mentee name or email..."
+                  className="input-enhanced pl-11 pr-4"
                 />
               </div>
-              {/* Show create button for authenticated users who can create projects */}
-              {user?.id && (
-                <>
-                  {userProfile?.role === 'mentee' && (
-                    <button onClick={openModal} className="btn-primary">
-                      + Create Project
-                    </button>
-                  )}
-                  {userProfile?.role === 'hod' && (
-                    <button onClick={openModal} className="btn-secondary">
-                      + Create Project (Admin)
-                    </button>
-                  )}
-                </>
-              )}
-              {/* Show login prompt for non-authenticated users */}
-              {!user?.id && (
-                <div className="px-6 py-3 rounded-xl bg-gradient-to-r from-gray-100 to-gray-200 text-gray-600 font-medium">
-                  Login to Create Project
-                </div>
+              {/* Show create button only for HOD/Admin - mentees cannot create projects in search view */}
+              {user?.id && userProfile?.role === 'hod' && (
+                <button onClick={openModal} className="btn-secondary">
+                  + Create Project (Admin)
+                </button>
               )}
             </div>
           </div>
@@ -416,7 +453,9 @@ const Projects = () => {
                 ? 'No projects assigned to you yet.'
                 : userProfile?.role === 'hod'
                 ? 'No projects found.'
-                : 'No projects found. Try a different search or create one.'}
+                : userProfile?.role === 'mentee'
+                ? 'No projects found. Try a different search.'
+                : 'No projects found. Try a different search.'}
             </p>
           </motion.div>
         ) : (

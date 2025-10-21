@@ -1,7 +1,56 @@
 import React from 'react';
+import { useNavigate } from 'react-router-dom';
+import { useAuth } from '../contexts/AuthContext';
+import toast from 'react-hot-toast';
 import banner from '/banner.png';
 
 function Banner() {
+  const navigate = useNavigate();
+  const { isAuthenticated, userProfile, loading } = useAuth();
+
+  const handleGetStarted = () => {
+    try {
+      // Show loading toast while checking auth
+      const loadingToast = toast.loading('Checking authentication...');
+
+      // Check if user is logged in
+      if (isAuthenticated && userProfile) {
+        toast.dismiss(loadingToast);
+        toast.success('Redirecting to your dashboard...');
+        
+        // Redirect to appropriate dashboard based on role
+        navigate('/dashboard');
+      } else {
+        toast.dismiss(loadingToast);
+        toast('Please login to get started', {
+          icon: '🔐',
+          duration: 2000
+        });
+        
+        // Redirect to login page
+        navigate('/login');
+      }
+    } catch (error) {
+      console.error('Navigation error:', error);
+      toast.error('Navigation failed. Please try again.');
+    }
+  };
+
+  const handleLearnMore = () => {
+    try {
+      toast('Navigating to About page...', {
+        icon: '📖',
+        duration: 1500
+      });
+      
+      // Redirect to About page
+      navigate('/about');
+    } catch (error) {
+      console.error('Navigation error:', error);
+      toast.error('Navigation failed. Please try again.');
+    }
+  };
+
   return (
     <section className="relative bg-gradient-to-br from-indigo-50 via-purple-50 to-pink-50 py-32 md:py-48 overflow-hidden">
       <div className="max-w-screen-xl mx-auto px-4 md:px-8 flex flex-col md:flex-row items-center relative z-10">
@@ -22,11 +71,38 @@ function Banner() {
               Join our community to showcase your innovations, receive valuable insights, and contribute to the growth of others. Let's build, review, and grow — together.
             </p>
             <div className="mt-10 flex flex-col sm:flex-row gap-4">
-              <button className="btn-primary transform hover:scale-105 shadow-2xl">
-                Get Started
+              <button 
+                onClick={handleGetStarted}
+                disabled={loading}
+                className="btn-primary transform hover:scale-105 shadow-2xl disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 flex items-center justify-center gap-2"
+                aria-label="Get started with the platform"
+              >
+                {loading ? (
+                  <>
+                    <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    <span>Loading...</span>
+                  </>
+                ) : (
+                  <>
+                    <span>Get Started</span>
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                    </svg>
+                  </>
+                )}
               </button>
-              <button className="btn-outline">
-                Learn More
+              <button 
+                onClick={handleLearnMore}
+                className="btn-outline flex items-center justify-center gap-2 transition-all duration-200"
+                aria-label="Learn more about the platform"
+              >
+                <span>Learn More</span>
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+                </svg>
               </button>
             </div>
           </div>
