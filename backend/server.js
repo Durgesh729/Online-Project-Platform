@@ -12,6 +12,7 @@ const authRoutes = require("./routes/authRoutes");
 const projectRoutes = require("./routes/projectRoutes");
 const hodRoutes = require("./routes/hodRoutes");
 const mentorRoutes = require("./routes/mentorRoutes");
+const remarkRoutes = require("./routes/remarkRoutes");
 
 // App + config
 const app = express();
@@ -33,6 +34,7 @@ app.use("/api/auth", authRoutes);
 app.use("/api", projectRoutes);
 app.use("/api", hodRoutes);
 app.use("/api", mentorRoutes);
+app.use("/api", remarkRoutes);
 
 // Root route
 app.get("/", (req, res) => {

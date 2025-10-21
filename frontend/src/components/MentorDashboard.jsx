@@ -528,29 +528,69 @@ const MentorDashboard = () => {
 
   const handleSaveRemark = async () => {
     if (!remarkModal.submission) {
+      console.warn('No submission selected for remark');
       setRemarkModal({ open: false, submission: null, remark: '' });
       return;
     }
 
+    console.log('Saving remark for submission:', remarkModal.submission.id);
+    console.log('Remark text:', remarkModal.remark);
+
     const saving = toast.loading('Saving remark...');
 
     try {
-      const { error: remarkError } = await supabase
-        .from('submissions')
-        .update({ remark: remarkModal.remark.trim() })
-        .eq('id', remarkModal.submission.id);
+      // Check if user is authenticated
+      const { data: { user }, error: authError } = await supabase.auth.getUser();
+      if (authError || !user) {
+        throw new Error('Authentication required. Please log in again.');
+      }
 
-      if (remarkError) throw remarkError;
+      console.log('Authenticated user:', user.id);
+
+      const { data: updatedSubmission, error: remarkError } = await supabase
+        .from('submissions')
+        .update({ 
+          remark: remarkModal.remark.trim(),
+          remark_updated_at: new Date().toISOString()
+        })
+        .eq('id', remarkModal.submission.id)
+        .select()
+        .single();
+
+      if (remarkError) {
+        console.error('Supabase error details:', remarkError);
+        throw remarkError;
+      }
+
+      console.log('Remark saved successfully:', updatedSubmission);
 
       setSubmissions(prev => (
-        prev.map(item => item.id === remarkModal.submission.id ? { ...item, remark: remarkModal.remark.trim() } : item)
+        prev.map(item => item.id === remarkModal.submission.id ? { 
+          ...item, 
+          remark: remarkModal.remark.trim(),
+          remark_updated_at: new Date().toISOString()
+        } : item)
       ));
 
-      toast.success('Remark saved.');
+      toast.success('Remark saved successfully. Mentee will be notified.');
       setRemarkModal({ open: false, submission: null, remark: '' });
     } catch (remarkError) {
       console.error('Remark save error:', remarkError);
-      toast.error('Failed to save remark.');
+      
+      // Provide specific error messages
+      let errorMessage = 'Failed to save remark.';
+      
+      if (remarkError.message?.includes('row-level security')) {
+        errorMessage = 'Permission denied. Please ensure you are the assigned mentor for this project.';
+      } else if (remarkError.message?.includes('column') && remarkError.message?.includes('does not exist')) {
+        errorMessage = 'Database setup incomplete. Please run the SQL migration script.';
+      } else if (remarkError.message?.includes('Authentication')) {
+        errorMessage = remarkError.message;
+      } else if (remarkError.message) {
+        errorMessage = remarkError.message;
+      }
+      
+      toast.error(errorMessage);
     } finally {
       toast.dismiss(saving);
     }

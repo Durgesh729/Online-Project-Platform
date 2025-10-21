@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
-import { FaUpload, FaEye, FaTrash, FaFileAlt, FaClock, FaCheckCircle, FaExclamationTriangle, FaSpinner, FaDownload } from 'react-icons/fa';
+import { FaUpload, FaEye, FaTrash, FaFileAlt, FaClock, FaCheckCircle, FaExclamationTriangle, FaSpinner, FaDownload, FaCommentDots } from 'react-icons/fa';
 
 const MenteeDashboard = () => {
   const [user, setUser] = useState(null);
@@ -14,6 +14,8 @@ const MenteeDashboard = () => {
   const [error, setError] = useState(null);
   const [submissions, setSubmissions] = useState({});
   const [uploading, setUploading] = useState({});
+  const [remarkModal, setRemarkModal] = useState({ open: false, stageKey: null, remark: '', submissionId: null });
+  const [unreadRemarks, setUnreadRemarks] = useState({});
   const navigate = useNavigate();
   const STORAGE_BUCKET = 'submissions';
 
@@ -171,6 +173,7 @@ const MenteeDashboard = () => {
   const fetchAllSubmissions = async (projectsList) => {
     try {
       const submissionsData = {};
+      const unreadRemarksData = {};
 
       for (const project of projectsList) {
         try {
@@ -194,6 +197,33 @@ const MenteeDashboard = () => {
           if (data) {
             submissionsData[project.id] = data.reduce((acc, submission) => {
               acc[submission.stage_key] = submission;
+              
+              // Check if submission has an unread remark
+              if (submission.remark && submission.remark.trim() !== '') {
+                // Check if this remark has been read
+                checkRemarkReadStatus(submission.id, submission.remark_updated_at)
+                  .then(isUnread => {
+                    if (isUnread) {
+                      console.log('Setting submission as UNREAD:', submission.id);
+                      setUnreadRemarks(prev => ({
+                        ...prev,
+                        [submission.id]: true
+                      }));
+                    } else {
+                      console.log('Submission marked as read:', submission.id);
+                      // Explicitly remove from unread if it's been read
+                      setUnreadRemarks(prev => {
+                        const updated = { ...prev };
+                        delete updated[submission.id];
+                        return updated;
+                      });
+                    }
+                  })
+                  .catch(err => {
+                    console.error('Error checking remark status:', err);
+                  });
+              }
+              
               return acc;
             }, {});
           }
@@ -214,6 +244,108 @@ const MenteeDashboard = () => {
     if (!allowedTypes || allowedTypes.length === 0) return true;
     const fileExtension = file.name.split('.').pop().toLowerCase();
     return allowedTypes.includes(fileExtension);
+  };
+
+  const checkRemarkReadStatus = async (submissionId, remarkUpdatedAt) => {
+    try {
+      // If no remarkUpdatedAt, can't determine if unread
+      if (!remarkUpdatedAt) {
+        console.log('No remarkUpdatedAt for submission:', submissionId);
+        return true; // Assume unread if no timestamp
+      }
+
+      // Check if there's a read record that's newer than the remark update
+      const { data, error } = await supabase
+        .from('remark_reads')
+        .select('read_at')
+        .eq('submission_id', submissionId)
+        .eq('mentee_id', user.id)
+        .maybeSingle();
+
+      if (error) {
+        console.error('Error checking remark read status:', error);
+        return true; // Assume unread on error
+      }
+
+      // If no read record, it's unread
+      if (!data) {
+        console.log('No read record found for submission:', submissionId, '- marking as UNREAD');
+        return true;
+      }
+
+      // Compare timestamps - if read_at is before remark_updated_at, it's unread
+      const readAt = new Date(data.read_at).getTime();
+      const updatedAt = new Date(remarkUpdatedAt).getTime();
+      
+      const isUnread = readAt < updatedAt;
+      console.log('Remark read status check:', {
+        submissionId,
+        readAt: data.read_at,
+        remarkUpdatedAt,
+        isUnread
+      });
+
+      return isUnread;
+    } catch (err) {
+      console.error('Error in checkRemarkReadStatus:', err);
+      return true; // Assume unread on error
+    }
+  };
+
+  const handleOpenRemarkModal = async (stageKey, submission) => {
+    if (!submission || !submission.remark) {
+      toast.error('No remark available for this submission.');
+      return;
+    }
+
+    setRemarkModal({
+      open: true,
+      stageKey,
+      remark: submission.remark,
+      submissionId: submission.id
+    });
+
+    // Mark the remark as read immediately in UI
+    setUnreadRemarks(prev => {
+      const updated = { ...prev };
+      delete updated[submission.id];
+      return updated;
+    });
+
+    // Then mark it as read in the database
+    try {
+      const currentTimestamp = new Date().toISOString();
+      
+      console.log('Marking remark as read:', {
+        submission_id: submission.id,
+        mentee_id: user.id,
+        read_at: currentTimestamp
+      });
+
+      const { data, error } = await supabase
+        .from('remark_reads')
+        .upsert({
+          submission_id: submission.id,
+          mentee_id: user.id,
+          read_at: currentTimestamp
+        }, {
+          onConflict: 'submission_id,mentee_id'
+        })
+        .select();
+
+      if (error) {
+        console.error('Error marking remark as read:', error);
+        toast.error('Failed to mark remark as read.');
+      } else {
+        console.log('Remark marked as read successfully:', data);
+      }
+    } catch (err) {
+      console.error('Error in handleOpenRemarkModal:', err);
+    }
+  };
+
+  const handleCloseRemarkModal = () => {
+    setRemarkModal({ open: false, stageKey: null, remark: '', submissionId: null });
   };
 
   const handleFileUpload = async (stageKey, file) => {
@@ -691,55 +823,28 @@ const MenteeDashboard = () => {
                           >
                             <FaEye /> View
                           </button>
+                          
+                          {/* Remarks Button with Notification Dot */}
                           <button
-                            onClick={async () => {
-                              if (!submissionEntry) return;
-                              
-                              try {
-                                console.log('Attempting to download file:', submissionEntry);
-                                
-                                let downloadUrl = submissionEntry.file_url;
-                                
-                                // For private storage, get a signed URL for download
-                                if (submissionEntry.storage_path) {
-                                  console.log('Getting signed URL for download:', submissionEntry.storage_path);
-                                  
-                                  const { data, error } = await supabase.storage
-                                    .from(STORAGE_BUCKET)
-                                    .createSignedUrl(submissionEntry.storage_path, 3600); // 1 hour expiry
-                                  
-                                  if (error) {
-                                    console.error('Error creating signed URL for download:', error);
-                                    // Fallback to public URL
-                                    const { data: { publicUrl } } = supabase.storage
-                                      .from(STORAGE_BUCKET)
-                                      .getPublicUrl(submissionEntry.storage_path);
-                                    downloadUrl = publicUrl;
-                                  } else {
-                                    downloadUrl = data.signedUrl;
-                                    console.log('Got signed URL for download:', downloadUrl);
-                                  }
-                                }
-                                
-                                // Create download link
-                                const link = document.createElement('a');
-                                link.href = downloadUrl;
-                                link.download = submissionEntry.filename || `${stageConfig.key}`;
-                                link.target = '_blank'; // Open in new tab as fallback
-                                document.body.appendChild(link);
-                                link.click();
-                                document.body.removeChild(link);
-                                
-                                toast.success('Download started...');
-                              } catch (error) {
-                                console.error('Error downloading file:', error);
-                                toast.error('Unable to download file. Please try again.');
-                              }
-                            }}
-                            className="inline-flex items-center gap-2 px-3 py-2 text-sm font-semibold bg-slate-200 text-slate-700 rounded-lg hover:bg-slate-300 transition"
+                            onClick={() => handleOpenRemarkModal(stageConfig.key, submissionEntry)}
+                            disabled={!submissionEntry.remark || submissionEntry.remark.trim() === ''}
+                            className={`relative inline-flex items-center gap-2 px-3 py-2 text-sm font-semibold rounded-lg transition ${
+                              submissionEntry.remark && submissionEntry.remark.trim() !== ''
+                                ? 'bg-yellow-100 text-yellow-700 hover:bg-yellow-200'
+                                : 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                            }`}
                           >
-                            <FaDownload /> Download
+                            <FaCommentDots />
+                            Remarks
+                            {/* Blue notification dot for unread remarks */}
+                            {unreadRemarks[submissionEntry.id] && (
+                              <span className="absolute -top-1 -right-1 flex h-3 w-3">
+                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                                <span className="relative inline-flex rounded-full h-3 w-3 bg-blue-500"></span>
+                              </span>
+                            )}
                           </button>
+                          
                           <button
                             onClick={() => handleFileDelete(stageConfig.key)}
                             className="inline-flex items-center gap-2 px-3 py-2 text-sm font-semibold bg-red-100 text-red-600 rounded-lg hover:bg-red-200 transition"
@@ -826,6 +931,55 @@ const MenteeDashboard = () => {
                   Close
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Remark Modal */}
+      {remarkModal.open && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="text-xl font-semibold text-slate-900">Mentor's Remark</h3>
+                <p className="text-sm text-slate-500 mt-1">
+                  {submissionStages.find(s => s.key === remarkModal.stageKey)?.label || 'Submission'}
+                </p>
+              </div>
+              <button
+                onClick={handleCloseRemarkModal}
+                className="text-gray-400 hover:text-gray-600 transition"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            
+            <div className="bg-gradient-to-br from-yellow-50 to-orange-50 border-2 border-yellow-200 rounded-xl p-6 mb-4">
+              <div className="flex items-start gap-3">
+                <div className="flex-shrink-0">
+                  <div className="w-10 h-10 bg-yellow-500 rounded-full flex items-center justify-center">
+                    <FaCommentDots className="text-white text-lg" />
+                  </div>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <h4 className="text-sm font-semibold text-yellow-900 mb-2">Feedback from your mentor:</h4>
+                  <div className="text-slate-700 whitespace-pre-wrap break-words">
+                    {remarkModal.remark || 'No remark provided.'}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={handleCloseRemarkModal}
+                className="px-6 py-2.5 rounded-xl bg-blue-600 text-white font-semibold hover:bg-blue-700 transition shadow-md hover:shadow-lg"
+              >
+                Close
+              </button>
             </div>
           </div>
         </div>
