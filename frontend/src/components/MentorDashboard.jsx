@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
+import SearchBar from './SearchBar';
 import {
   FaEye,
   FaDownload,
@@ -68,6 +69,7 @@ const MentorDashboard = () => {
   const [deliverablesLoading, setDeliverablesLoading] = useState(false);
   const [projectFiles, setProjectFiles] = useState({});
   const [loadingProjectFiles, setLoadingProjectFiles] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
   const projectFileChannelRef = useRef(null);
   const currentProjectIdsRef = useRef([]);
 
@@ -239,20 +241,71 @@ const MentorDashboard = () => {
         const finalProjects = Array.from(Object.values(normalizedProjectMap))
           .sort((a, b) => new Date(b?.created_at || 0) - new Date(a?.created_at || 0));
 
-        setProjects(finalProjects);
-        setError(null);
+        // Enrich projects with mentee information for better search
+        const allMenteeIds = new Set();
+        finalProjects.forEach(project => {
+          if (Array.isArray(project.mentees)) {
+            project.mentees.forEach(menteeId => {
+              if (menteeId && typeof menteeId === 'string') {
+                allMenteeIds.add(menteeId);
+              }
+            });
+          }
+        });
 
-        if (finalProjects.length > 0 && !selectedProjectId) {
-          setSelectedProjectId(finalProjects[0]?.id || null);
+        // Fetch mentee details if we have any IDs
+        let menteeMap = {};
+        if (allMenteeIds.size > 0) {
+          try {
+            const { data: menteesData, error: menteesError } = await supabase
+              .from('users')
+              .select('id, name, email')
+              .in('id', Array.from(allMenteeIds));
+
+            if (!menteesError && menteesData) {
+              menteeMap = menteesData.reduce((acc, mentee) => {
+                acc[mentee.id] = mentee;
+                return acc;
+              }, {});
+            }
+          } catch (menteeError) {
+            console.warn('Could not fetch mentee details:', menteeError);
+          }
         }
 
-        if (finalProjects.length > 0) {
+        // Enrich projects with mentee objects
+        const enrichedProjects = finalProjects.map(project => {
+          if (Array.isArray(project.mentees)) {
+            const enrichedMentees = project.mentees
+              .map(menteeId => {
+                if (typeof menteeId === 'string' && menteeMap[menteeId]) {
+                  return menteeMap[menteeId];
+                } else if (typeof menteeId === 'object') {
+                  return menteeId; // Already an object
+                }
+                return null;
+              })
+              .filter(Boolean);
+            
+            return { ...project, mentees: enrichedMentees };
+          }
+          return project;
+        });
+
+        setProjects(enrichedProjects);
+        setError(null);
+
+        if (enrichedProjects.length > 0 && !selectedProjectId) {
+          setSelectedProjectId(enrichedProjects[0]?.id || null);
+        }
+
+        if (enrichedProjects.length > 0) {
           try {
-            await fetchAllProjectDeliverables(finalProjects);
+            await fetchAllProjectDeliverables(enrichedProjects);
           } catch (fetchError) {
             console.error('Error fetching deliverables:', fetchError);
           }
-          const projectIds = finalProjects.map(project => project.id).filter(Boolean);
+          const projectIds = enrichedProjects.map(project => project.id).filter(Boolean);
           currentProjectIdsRef.current = projectIds;
           await fetchProjectFiles(projectIds);
           setupProjectFilesSubscription(projectIds);
@@ -344,6 +397,57 @@ const MentorDashboard = () => {
     () => projects.find(project => project.id === selectedProjectId) || null,
     [projects, selectedProjectId]
   );
+
+  // Filter projects based on search query
+  const filteredProjects = useMemo(() => {
+    if (!searchQuery.trim()) {
+      return projects;
+    }
+
+    const query = searchQuery.toLowerCase().trim();
+    
+    return projects.filter(project => {
+      // Search in project name/title
+      const projectName = (project.title || project.project_name || '').toLowerCase();
+      if (projectName.includes(query)) {
+        return true;
+      }
+
+      // Search in domain
+      const domain = (project.domain || '').toLowerCase();
+      if (domain.includes(query)) {
+        return true;
+      }
+
+      // Search in mentees array (if available)
+      if (Array.isArray(project.mentees)) {
+        // Check if mentees is an array of IDs or objects
+        const hasMenteeMatch = project.mentees.some(mentee => {
+          if (typeof mentee === 'string') {
+            // mentee is an ID or email
+            return mentee.toLowerCase().includes(query);
+          } else if (typeof mentee === 'object' && mentee !== null) {
+            // mentee is an object with name/email
+            const menteeName = (mentee.name || '').toLowerCase();
+            const menteeEmail = (mentee.email || '').toLowerCase();
+            return menteeName.includes(query) || menteeEmail.includes(query);
+          }
+          return false;
+        });
+        if (hasMenteeMatch) {
+          return true;
+        }
+      }
+
+      // Search in project_details/description
+      const details = (project.project_details || project.description || '').toLowerCase();
+      if (details.includes(query)) {
+        return true;
+      }
+
+      return false;
+    });
+  }, [projects, searchQuery]);
 
   const submissionsByStage = useMemo(() => {
     const map = new Map();
@@ -553,18 +657,35 @@ const MentorDashboard = () => {
           <p className="text-sm text-slate-400 mt-1">Review assigned projects and submissions</p>
         </div>
 
-        <div className="px-4 py-6 space-y-4 h-[calc(100vh-220px)] overflow-y-auto">
+        {/* Search Bar */}
+        <div className="px-4 py-4 border-b border-slate-800">
+          <SearchBar
+            value={searchQuery}
+            onChange={setSearchQuery}
+            placeholder="Search projects or mentees..."
+            onClear={() => setSearchQuery('')}
+          />
+        </div>
+
+        <div className="px-4 py-6 space-y-4 h-[calc(100vh-320px)] overflow-y-auto">
           {loadingProjects ? (
             <div className="flex items-center justify-center py-10 text-slate-400">
               <FaSpinner className="animate-spin mr-2" />
               Loading projects...
             </div>
-          ) : projects.length === 0 ? (
+          ) : filteredProjects.length === 0 ? (
             <div className="text-center text-slate-400 text-sm py-10">
-              No projects assigned.
+              {searchQuery ? (
+                <>
+                  <p>No projects match your search.</p>
+                  <p className="text-xs mt-2">Try different keywords</p>
+                </>
+              ) : (
+                'No projects assigned.'
+              )}
             </div>
           ) : (
-            projects.map(project => {
+            filteredProjects.map(project => {
               const isActive = project.id === selectedProjectId;
               return (
                 <button
